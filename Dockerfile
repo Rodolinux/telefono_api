@@ -1,72 +1,65 @@
-# syntax=docker/dockerfile:1
-# check=error=true
+FROM ruby:3.2.8-slim AS builder
 
-# This Dockerfile is designed for production, not development. Use with Kamal or build'n'run by hand:
-# docker build -t telefono_api .
-# docker run -d -p 80:80 -e RAILS_MASTER_KEY=<value from config/master.key> --name telefono_api telefono_api
+# Instalar dependencias necesarias para construir las gems nativas
+RUN apt-get update -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    nodejs \
+    yarn \
+    libyaml-dev
 
-# For a containerized dev environment, see Dev Containers: https://guides.rubyonrails.org/getting_started_with_devcontainer.html
+# Limpiar la caché de Bundler y forzar la reinstalación sin development y test
 
-# Make sure RUBY_VERSION matches the Ruby version in .ruby-version
-ARG RUBY_VERSION=3.2.8
-FROM docker.io/library/ruby:$RUBY_VERSION-slim AS base
 
-# Rails app lives here
-WORKDIR /rails
+WORKDIR /app
 
-# Install base packages
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y curl libjemalloc2 libvips sqlite3 && \
-    rm -rf /var/lib/apt/lists /var/cache/apt/archives
-
-# Set production environment
-ENV RAILS_ENV="production" \
-    BUNDLE_DEPLOYMENT="1" \
-    BUNDLE_PATH="/usr/local/bundle" \
-    BUNDLE_WITHOUT="development"
-
-# Throw-away build stage to reduce size of final image
-FROM base AS build
-
-# Install packages needed to build gems
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config && \
-    rm -rf /var/lib/apt/lists /var/cache/apt/archives
-
-# Install application gems
+# Copiar Gemfile y Gemfile.lock PRIMERO
 COPY Gemfile Gemfile.lock ./
-RUN bundle install && \
-    rm -rf ~/.bundle/ "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git && \
-    bundle exec bootsnap precompile --gemfile
 
-# Copy application code
+# Eliminar explícitamente jruby-openssl del Gemfile.lock
+RUN sed -i '/jruby-openssl/d' Gemfile.lock
+
+# Limpiar la caché de Bundler y forzar la reinstalación sin development y test
+RUN bundle config --delete path
+RUN rm -rf /usr/local/bundle
+RUN bundle install --without development test
+
+# Copiar el resto de la aplicación DESPUÉS de la instalación de gems
 COPY . .
 
-# Precompile bootsnap code for faster boot times
-RUN bundle exec bootsnap precompile app/ lib/
-
-# Precompiling assets for production without requiring secret RAILS_MASTER_KEY
-RUN SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile
+ENV RAILS_ENV=production
+ENV SECRET_KEY_BASE="354afcf319ab3a0050836380e9a9f9460e53978795de0c3ef83c1d4adc142ef3d5f331d56d254b0288367e30e242f9ea5d9bf54d3144d800cd793997ee118f1d"
 
 
+# Precompilar los assets (con precauciones para bootsnap)
+RUN bundle exec spring stop || true
+#RUN rails runner "Rails.application.config.cache_classes = true"
+RUN rails runner "Rails.application.load_seed" || true
+RUN RAILS_ENV=production SECRET_KEY_BASE="$SECRET_KEY_BASE" bundle exec rails assets:precompile
 
+FROM ruby:3.2.8-slim
 
-# Final stage for app image
-FROM base
+# Instalar dependencias necesarias para ejecutar la aplicación
+RUN apt-get update -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends \
+    libpq-dev \
+    libyaml-dev
 
-# Copy built artifacts: gems, application
-COPY --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
-COPY --from=build /rails /rails
+WORKDIR /app
 
-# Run and own only the runtime files as a non-root user for security
-RUN groupadd --system --gid 1000 rails && \
-    useradd rails --uid 1000 --gid 1000 --create-home --shell /bin/bash && \
-    chown -R rails:rails db log storage tmp
-USER 1000:1000
+# Copiar la aplicación construida
+COPY --from=builder /app .
 
-# Entrypoint prepares the database.
-ENTRYPOINT ["/rails/bin/docker-entrypoint"]
+# Establecer variables de entorno (ajusta según tus necesidades)
+ENV RAILS_ENV production
+ENV RAILS_LOG_TO_STDOUT true
+ENV PORT 8080
+# Si usas una base de datos, configura DATABASE_URL como variable de entorno en Cloud Run
 
-# Start server via Thruster by default, this can be overwritten at runtime
-EXPOSE 80
-CMD ["./bin/thrust", "./bin/rails", "server"]
+# Exponer el puerto en el que escucha Puma
+EXPOSE 8080
+# declarar explícitamente el path para que cargue las gemas
+ENV PATH="/usr/local/bundle/bin:$PATH"
+# Comando para iniciar el servidor Puma
+CMD ["bundle", "exec", "puma", "-p", "8080"]

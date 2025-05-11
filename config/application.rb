@@ -9,7 +9,8 @@ Bundler.require(*Rails.groups)
 module TelefonoApi
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
-    config.load_defaults Rails.version.to_s
+    #config.load_defaults Rails.version.to_s
+    config.load_defaults 7.1
     config.api_only = true
 
     # Please, add to the `ignore` list any other `lib` subdirectories that do
