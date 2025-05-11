@@ -1,6 +1,6 @@
 # spec/rails_helper.rb
 
-ENV['RAILS_ENV'] ||= 'test'
+#ENV['RAILS_ENV'] ||= 'test'
 
 # Prevent database truncation if the environment is production
 abort("The Rails environment is running in production mode!") if Rails.env.production?
